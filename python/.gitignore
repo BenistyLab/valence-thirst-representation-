@@ -1,0 +1,13 @@
+# Local / secrets
+.env
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Data and analysis outputs (keep local; do not push to GitHub)
+normalized_data/
+outputs/
+old_out/
+*.npz
