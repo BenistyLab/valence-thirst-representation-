@@ -52,21 +52,25 @@ PHASE_PATTERN_STANDARD: dict[str, tuple[int, ...]] = {
     "pre": (2,),
     "airpuff": (3,),
     "water": (4,),
+    "free-consumption": (5,)
 }
 PHASE_PATTERN_SPLIT_PRE: dict[str, tuple[int, ...]] = {
     "pre": (2, 3),
     "airpuff": (4,),
     "water": (5,),
+    "free-consumption": (6,),
 }
 PHASE_PATTERN_SPLIT_AIRPUFF: dict[str, tuple[int, ...]] = {
     "pre": (2,),
     "airpuff": (3, 4),
     "water": (5,),
+    "free-consumption": (6,),
 }
 PHASE_PATTERN_SPLIT_WATER: dict[str, tuple[int, ...]] = {
     "pre": (2,),
     "airpuff": (3,),
     "water": (4, 5),
+    "free-consumption": (6,),
 }
 
 # Canonical session id is "{protocol}/{mouse}", e.g. "20Hz/AL45".

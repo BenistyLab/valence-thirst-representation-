@@ -50,7 +50,9 @@ REPO_ROOT = r"C:\Users\neely.heller\PycharmProjects\valence-thirst-representatio
 
 # SCRIPT = REPO_ROOT / "prepare_data_no_cap.py"
 # this calls prepare_data_no_cap but you can change it or change the cap
-SCRIPT = r"C:\Users\neely.heller\PycharmProjects\valence-thirst-representation-\python\prepare_data_no_cap.py"
+# SCRIPT = r"C:\Users\neely.heller\PycharmProjects\valence-thirst-representation-\python\prepare_data_no_cap.py"
+SCRIPT = r"C:\Users\neely.heller\PycharmProjects\valence-thirst-representation-\python\run_prepare_data_free_consumption.py"
+
 
 ALL_MICE_MOCK = ['Mock/AL42', 'Mock/AL48', 'Mock/AL49_1', 'Mock/AL49_2']
 ALL_MICE_20HZ = ['20Hz/AL41', '20Hz/AL42', '20Hz/AL45', '20Hz/AL48', '20Hz/AL49_1', '20Hz/AL49_2']
