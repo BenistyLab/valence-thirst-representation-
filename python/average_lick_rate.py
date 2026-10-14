@@ -259,7 +259,7 @@ def _compute_one_sliding_window(
 
     return {
         "trials": sequential,
-        "window_values": {float(t): seq_window_values[t] for t in sequential},
+        "window_values": {str(t): seq_window_values[t] for t in sequential},
         "window_size": window_size,
         "step": step,
         "boundaries": boundaries,
@@ -382,32 +382,51 @@ def main_sliding_window(window_size: int = 10, step: int = 1) -> None:
             if data is None:
                 continue
 
+            trials_sorted = data["trials"]
+
+            # Determine which consecutive trial pairs straddle a run-phase
+            # boundary.  boundaries are fractional trial-space positions
+            # (e.g. 2.5 = between trial 2 and 3).
+            boundary_trial_pairs: set[tuple[int, int]] = set()
+            for b in data["boundaries"]:
+                lower_cands = [t for t in trials_sorted if t <= b]
+                upper_cands = [t for t in trials_sorted if t >= b]
+                if not lower_cands or not upper_cands:
+                    continue
+                lo, hi = max(lower_cands), min(upper_cands)
+                if lo != hi:
+                    boundary_trial_pairs.add((lo, hi))
+
             # Concatenate each trial's window-average trace in trial order.
-            # A NaN is inserted between trials so matplotlib breaks the line
-            # there instead of drawing a false connector between non-adjacent
-            # windows (which produces steep near-vertical spikes).
+            # NaN is inserted ONLY at run-phase boundaries so matplotlib breaks
+            # the line there.  Adjacent trials within the same run are joined
+            # continuously (no gap, no false spike).
             values: list[float] = []
             trial_start_x: dict[float, int] = {}
-            for i, trial in enumerate(data["trials"]):
+            for i, trial in enumerate(trials_sorted):
                 trial_start_x[trial] = len(values)
                 values.extend(data["window_values"][str(trial)])
-                if i != len(data["trials"]) - 1:
-                    values.append(float("nan"))
+                if i != len(trials_sorted) - 1:
+                    next_trial = trials_sorted[i + 1]
+                    if (trial, next_trial) in boundary_trial_pairs:
+                        values.append(float("nan"))
 
             x = list(range(len(values)))
             color = PROTOCOL_COLORS.get(protocol, "black")
             plt.plot(x, values, color=color, label=protocol, linewidth=1)
 
             # Map run-phase boundaries from trial-space to window-index space.
-            trials_sorted = data["trials"]
             for b in data["boundaries"]:
-                lower = max(t for t in trials_sorted if t <= b)
-                upper = min(t for t in trials_sorted if t >= b)
-                if lower == upper:
+                lower_cands = [t for t in trials_sorted if t <= b]
+                upper_cands = [t for t in trials_sorted if t >= b]
+                if not lower_cands or not upper_cands:
                     continue
-                frac = (b - lower) / (upper - lower)
-                x_lower = trial_start_x[lower]
-                x_upper = trial_start_x[upper]
+                lo, hi = max(lower_cands), min(upper_cands)
+                if lo == hi:
+                    continue
+                frac = (b - lo) / (hi - lo)
+                x_lower = trial_start_x[lo]
+                x_upper = trial_start_x[hi]
                 plt.axvline(
                     x_lower + frac * (x_upper - x_lower),
                     color=color, linestyle="--", linewidth=1, alpha=0.6,

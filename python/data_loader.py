@@ -86,7 +86,7 @@ def load_mouse(session_dir=None, *, min_duration: int = 300,
         points elsewhere. When None, falls back to LIVNEH_MOUSE_ID / the
         module-level config.NORMALIZED_DIR.
     min_duration
-        Minimum number of frames in the time axis of run.X (zero-padded).
+        Trials with fewer than this many frames are dropped entirely.
     to_zscore
         Unused — z-scoring is already applied by prepare_data.py.
     """
@@ -125,13 +125,27 @@ def load_mouse(session_dir=None, *, min_duration: int = 300,
             raise ValueError(f"NPZ pack '{npz_path}' contains no trials.")
         n_neurons = segments[0].shape[0]
 
-        # Time axis: longest trial, but at least min_duration (zero-pad shorter)
-        t_max = max(max(s.shape[1] for s in segments), min_duration)
+        # Drop trials shorter than min_duration frames (no zero-padding)
+        keep_mask = np.array([s.shape[1] >= min_duration for s in segments])
+        n_dropped = int(np.sum(~keep_mask))
+        if n_dropped:
+            print(
+                f"[data_loader] {phase_name}/{npz_key}: dropping {n_dropped} "
+                f"trial(s) shorter than {min_duration} frames."
+            )
+        segments   = [s for s, k in zip(segments, keep_mask) if k]
+        trial_type = trial_type[keep_mask]
+        trial_idx  = trial_idx[keep_mask]
 
-        # Stack into (n_cells, n_frames, n_trials)
-        X = np.zeros((n_neurons, t_max, len(segments)), dtype=np.float32)
-        for i, seg in enumerate(segments):
-            X[:, :seg.shape[1], i] = seg
+        if not segments:
+            raise ValueError(
+                f"NPZ pack '{npz_path}' contains no trials with "
+                f">={min_duration} frames."
+            )
+
+        # Trim every trial to exactly min_duration frames and stack
+        # into (n_cells, n_frames, n_trials) — no zero-padding needed.
+        X = np.stack([seg[:, :min_duration] for seg in segments], axis=2)
 
         runs.append(Run(phase_name, X, trial_type, trial_idx))
 

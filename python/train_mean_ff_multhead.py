@@ -5,7 +5,7 @@ The model is trained jointly on pre-run, SLM-water, and SLM-airpuff trials;
 each trial contributes classification loss through its own run-group head.
 
 Architecture:
-  Shared encoder : n_cells  →  Linear(latent_dim)  →  ReLU  →  Dropout
+  Shared encoder : n_cells  →  Linear(latent_dim)  →  ReLU
   Per-phase heads: latent_dim  →  Linear(3)        (one per phase)
 
 At test time every decoder head is applied to every phase's test trials,
@@ -42,17 +42,21 @@ LABELS = ("water", "salt", "airpuff")
 DISCARD_SAMPLES = 60     # skip first 60 frames (MATLAB 1:60)
 FRAME_CAP       = 300    # use frames 61–300 (MATLAB 61:300, Python [60:300])
 LATENT_DIM = 32          # fixed encoder width
+MIN_TRIALS_PER_CLASS = 5 # minimum trials of each label per phase; sessions below this are skipped
+
+
+class InsufficientTrialsError(Exception):
+    """Raised when a session lacks enough trials of some class in some phase."""
 
 
 class SharedEncoderMultiHead(nn.Module):
-    """Shared feed-forward encoder (n_cells → latent_dim, ReLU, Dropout) and linear heads per phase."""
+    """Shared feed-forward encoder (n_cells → latent_dim, ReLU) and linear heads per phase."""
 
-    def __init__(self, n_cells: int, latent_dim: int = LATENT_DIM, dropout: float = 0.3):
+    def __init__(self, n_cells: int, latent_dim: int = LATENT_DIM):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(n_cells, latent_dim),
             nn.ReLU(),
-            nn.Dropout(p=dropout),
         )
         self.decoders = nn.ModuleDict({
             phase: nn.Linear(latent_dim, len(LABELS)) for phase in PHASES
@@ -121,8 +125,9 @@ def _make_datasets(runs, condition_names: dict[int, str]) -> dict[str, dict]:
         label_by_id = {name_to_id[name]: label for name, label in required.items()}
         keep = np.isin(run.condition, list(label_by_id))
         # MATLAB sample indices 61:300 (Python [60:300]): discard first 60 frames
-        # and hard-cap at FRAME_CAP (300) to avoid averaging zero-padded tail frames
-        # that data_loader inserts when trials are shorter than min_duration.
+        # and use exactly FRAME_CAP (300) frames. data_loader drops any trial
+        # shorter than min_duration and trims the rest to exactly min_duration,
+        # so every trial in run.X has exactly 300 frames — no zero-padded tail.
         features = run.X[:, DISCARD_SAMPLES:FRAME_CAP, keep].mean(
             axis=1, dtype=np.float64
         ).T.astype(np.float32)
@@ -184,10 +189,10 @@ def _predict_logits(model: SharedEncoderMultiHead, X: np.ndarray,
         return model.decode(model.encode(x), phase).cpu().numpy()
 
 
-def train_session(mouse_id: str, output_dir: Path, *, folds: int = 4,
-                  epochs: int = 500, patience: int = 50,
+def train_session(mouse_id: str, output_dir: Path, *, folds: int = 5,
+                  epochs: int = 250, patience: int = 25,
                   batch_size: int = 16, latent_dim: int = LATENT_DIM,
-                  weight_decay: float = 1e-2, dropout: float = 0.3,
+                  weight_decay: float = 1e-2,
                   normalize: bool = False,
                   seed: int = 2026, pre_fold_csv: Path | None = None) -> dict:
     if not torch.cuda.is_available():
@@ -200,7 +205,7 @@ def train_session(mouse_id: str, output_dir: Path, *, folds: int = 4,
     print(f"Training device: {device} ({torch.cuda.get_device_name(device)})")
     print(f"Mouse: {mouse_id}")
     print(f"Encoder width: {latent_dim}; weight decay: {weight_decay:g}; "
-          f"dropout: {dropout}; fold-local normalise: {normalize}")
+          f"fold-local normalise: {normalize}")
 
     runs, condition_names = load_mouse(mouse_id=mouse_id, min_duration=300)
     datasets = _make_datasets(runs, condition_names)
@@ -208,6 +213,20 @@ def train_session(mouse_id: str, output_dir: Path, *, folds: int = 4,
         counts = np.bincount(datasets[phase]["y"], minlength=len(LABELS))
         print(f"{phase}: {len(datasets[phase]['y'])} labeled trials; "
               f"counts={dict(zip(LABELS, counts.tolist()))}")
+
+    # Require at least MIN_TRIALS_PER_CLASS trials of every label in every phase.
+    # If any phase falls short, the entire session is unusable — raise so the
+    # caller can skip it cleanly (especially important in --all mode).
+    for phase in PHASES:
+        counts = np.bincount(datasets[phase]["y"], minlength=len(LABELS))
+        short = {LABELS[i]: int(counts[i])
+                 for i in range(len(LABELS)) if counts[i] < MIN_TRIALS_PER_CLASS}
+        if short:
+            raise InsufficientTrialsError(
+                f"{mouse_id}: phase '{phase}' has fewer than {MIN_TRIALS_PER_CLASS} "
+                f"trials for class(es) {short} — session dropped."
+            )
+
     fold_ids = _get_folds(datasets, pre_fold_csv, folds, seed)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -276,7 +295,7 @@ def train_session(mouse_id: str, output_dir: Path, *, folds: int = 4,
             )
 
         model = SharedEncoderMultiHead(
-            datasets["pre"]["X"].shape[1], latent_dim, dropout=dropout,
+            datasets["pre"]["X"].shape[1], latent_dim,
         ).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=3e-3,
                                       weight_decay=weight_decay)
@@ -349,7 +368,6 @@ def train_session(mouse_id: str, output_dir: Path, *, folds: int = 4,
             "std": std,
             "fold": fold_i,
             "latent_dim": latent_dim,
-            "dropout": dropout,
             "normalize": normalize,
             "phases": PHASES,
             "labels": LABELS,
@@ -402,7 +420,7 @@ def train_session(mouse_id: str, output_dir: Path, *, folds: int = 4,
         f.write(f"Mouse: {mouse_id}\nDevice: {torch.cuda.get_device_name(device)}\n")
         f.write(f"Feature: trial mean activity over frames {DISCARD_SAMPLES + 1}:{FRAME_CAP} "
                 f"({FRAME_CAP - DISCARD_SAMPLES} samples)\n")
-        f.write(f"Architecture: n_cells → Linear({latent_dim}) → ReLU → Dropout({dropout}) "
+        f.write(f"Architecture: n_cells → Linear({latent_dim}) → ReLU "
                 f"→ [Linear(3) per phase]\n")
         f.write(f"AdamW weight decay: {weight_decay:g}; fold-local normalise: {normalize}\n")
         f.write(f"Phase order: {PHASES}\nLabel order: {LABELS}\n\n")
@@ -430,14 +448,12 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", type=Path, default=None,
                         help="Override the output directory for a single-session run.")
-    parser.add_argument("--folds", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=500)
-    parser.add_argument("--patience", type=int, default=50)
+    parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=250)
+    parser.add_argument("--patience", type=int, default=25)
     parser.add_argument("--latent-dim", type=int, default=LATENT_DIM,
                         help="Width of the shared encoder layer (default 32).")
     parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--dropout", type=float, default=0.3,
-                        help="Dropout probability in the encoder (default 0.3).")
     parser.add_argument("--normalize", action="store_true",
                         help="Apply fold-local z-score on top of prepare_data.py's global "
                              "z-score. Off by default (data is already normalised).")
@@ -463,19 +479,22 @@ def main() -> None:
             if (args.output_dir and len(mice) == 1)
             else base / f"mean_ff_multhead_enc{args.latent_dim}"
         )
-        fold_csv = args.pre_fold_csv or base / "fold_assignments.csv"
+        fold_csv = args.pre_fold_csv
 
         if len(mice) > 1:
             sep = "=" * 60
             print(f"\n{sep}\nMouse: {mouse_id}\n{sep}")
 
-        train_session(
-            mouse_id, output,
-            folds=args.folds, epochs=args.epochs, patience=args.patience,
-            latent_dim=args.latent_dim, weight_decay=args.weight_decay,
-            dropout=args.dropout, normalize=args.normalize,
-            seed=args.seed, pre_fold_csv=fold_csv,
-        )
+        try:
+            train_session(
+                mouse_id, output,
+                folds=args.folds, epochs=args.epochs, patience=args.patience,
+                latent_dim=args.latent_dim, weight_decay=args.weight_decay,
+                normalize=args.normalize,
+                seed=args.seed, pre_fold_csv=fold_csv,
+            )
+        except InsufficientTrialsError as exc:
+            print(f"[SKIPPED] {exc}")
 
 
 if __name__ == "__main__":
